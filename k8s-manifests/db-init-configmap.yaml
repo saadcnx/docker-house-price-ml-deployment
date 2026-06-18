@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-init-script
+data:
+  init.sql: |
+    CREATE TABLE IF NOT EXISTS predictions (
+        id SERIAL PRIMARY KEY,
+        size REAL NOT NULL,
+        bedrooms INTEGER NOT NULL,
+        age INTEGER NOT NULL,
+        predicted_price REAL NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    INSERT INTO predictions (size, bedrooms, age, predicted_price) VALUES
+    (2000, 3, 5, 245000.50),
+    (1500, 2, 10, 185000.75),
+    (2800, 4, 2, 320000.25)
+    ON CONFLICT DO NOTHING;
