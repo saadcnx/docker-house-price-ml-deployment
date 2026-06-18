@@ -1,6 +1,6 @@
-# 🧠 ML Model Serving API — Flask + PostgreSQL + Nginx on Docker
+# 🏠 House Price Prediction API — ML Model Deployment with Docker & Kubernetes
 
-A production-style machine learning inference platform built from scratch. Trains a scikit-learn classification model, serves predictions via a Flask REST API, persists every request to PostgreSQL, and orchestrates the full stack with Docker Compose — complete with Nginx load balancing across two API replicas, automated health checks, and resilience testing.
+A production-style MLOps project that trains a scikit-learn regression model, wraps it in a Flask REST API, containerizes it with Docker, persists predictions to PostgreSQL, and deploys the full stack to Kubernetes with auto-scaling, liveness probes, and load balancing.
 
 > **Author:** [saadcnx](https://github.com/saadcnx)
 
@@ -9,23 +9,20 @@ A production-style machine learning inference platform built from scratch. Train
 ## 🏗️ Architecture
 
 ```
-                        ┌─────────────────────────────────┐
-                        │         Nginx (Port 80)          │
-                        │      Round-Robin Load Balancer   │
-                        └────────────┬──────────┬──────────┘
-                                     │          │
-                          ┌──────────▼──┐   ┌───▼──────────┐
-                          │  ml-api:1   │   │   ml-api:2   │
-                          │  Port 5001  │   │   Port 5002  │
-                          │             │   │              │
-                          │ Flask + sklearn model (iris)   │
-                          └──────┬──────┘   └──────┬───────┘
-                                 │                 │
-                          ┌──────▼─────────────────▼───────┐
-                          │         PostgreSQL 15           │
-                          │      predictions table          │
-                          │   (persists all /predict calls) │
-                          └─────────────────────────────────┘
+                    ┌──────────────────────────────────┐
+                    │     Kubernetes / Docker Network   │
+                    │                                   │
+                    │   ┌────────────────────────────┐  │
+  HTTP Requests ───────▶│  Flask REST API (Gunicorn) │  │
+                    │   │  ml-house-predictor:v1.1   │  │
+                    │   │  Replicas: 2 (K8s: 3)      │  │
+                    │   └───────────┬────────────────┘  │
+                    │               │ writes predictions │
+                    │   ┌───────────▼────────────────┐  │
+                    │   │      PostgreSQL 13          │  │
+                    │   │   predictions table         │  │
+                    │   └────────────────────────────┘  │
+                    └──────────────────────────────────┘
 ```
 
 ---
@@ -34,170 +31,209 @@ A production-style machine learning inference platform built from scratch. Train
 
 ```
 .
-├── api/
-│   ├── Dockerfile                  # python:3.11-slim based image
-│   ├── app.py                      # Flask REST API (predict, health, history)
-│   ├── train_model.py              # scikit-learn iris classifier + serialization
-│   ├── model.pkl                   # Serialized trained model (fixed seed)
-│   └── requirements.txt            # Pinned Python dependencies
-├── db/
-│   └── init.sql                    # PostgreSQL schema — predictions table
-├── nginx/
-│   └── nginx.conf                  # Round-robin upstream config
-├── tests/
-│   └── test_api.py                 # End-to-end validation script (plain requests)
-└── docker-compose.yml              # Full stack orchestration
+├── app.py                          # HousePricePredictor class (train, load, predict)
+├── flask_app.py                    # Flask REST API with DB integration
+├── requirements.txt                # Pinned Python dependencies
+├── Dockerfile                      # python:3.9-slim based container image
+├── k8s-manifests/
+│   ├── postgres-deployment.yaml    # PostgreSQL Deployment + ClusterIP Service
+│   ├── ml-deployment.yaml          # ML API Deployment (2 replicas) + LoadBalancer
+│   └── db-init-configmap.yaml      # SQL schema init via ConfigMap
+└── house_price_model.pkl           # Serialized trained model (generated on first run)
 ```
 
 ---
 
 ## 🔌 API Reference
 
-### `GET /health`
-Returns service status and model load confirmation.
+### `GET /`
+Returns full API documentation and example request.
 
+### `GET /health`
 ```json
 {
   "status": "healthy",
-  "model_loaded": true,
-  "container_id": "a3f9c1d..."
+  "model_loaded": true
 }
 ```
 
 ### `POST /predict`
-Accepts four iris feature floats, returns class prediction with probabilities.
+Accepts house features and returns a price prediction. Persists the result to PostgreSQL.
 
 ```bash
-curl -X POST http://localhost/predict \
+curl -X POST http://localhost:5000/predict \
   -H "Content-Type: application/json" \
-  -d '{"features": [5.1, 3.5, 1.4, 0.2]}'
+  -d '{"size": 2500, "bedrooms": 3, "age": 10}'
 ```
 
 ```json
 {
-  "predicted_class": "setosa",
-  "prediction": 0,
-  "probabilities": {
-    "setosa": 0.97,
-    "versicolor": 0.02,
-    "virginica": 0.01
-  }
+  "prediction": 287450.75,
+  "input": { "size": 2500, "bedrooms": 3, "age": 10 }
 }
 ```
 
-Returns `HTTP 400` if fewer than four features are provided.
+Returns `HTTP 400` if any of `size`, `bedrooms`, or `age` are missing.
 
-### `GET /predictions/history?limit=N`
-Returns the last N prediction records from PostgreSQL.
+### `GET /predictions`
+Returns the 10 most recent predictions from PostgreSQL.
 
 ```json
-[
-  {
-    "id": 12,
-    "timestamp": "2025-06-10T14:23:01Z",
-    "features": [5.1, 3.5, 1.4, 0.2],
-    "predicted_class": "setosa",
-    "probabilities": { "setosa": 0.97, "versicolor": 0.02, "virginica": 0.01 }
-  }
-]
+{
+  "predictions": [
+    {
+      "id": 4,
+      "size": 2500.0,
+      "bedrooms": 3,
+      "age": 10,
+      "predicted_price": 287450.75,
+      "created_at": "2025-06-10T14:23:01"
+    }
+  ]
+}
 ```
 
----
-
-## 🐳 Docker Compose Services
-
-| Service | Image | Port | Role |
-|---|---|---|---|
-| `postgres` | `postgres:15` | 5432 | Prediction persistence |
-| `ml-api-1` | `ml-api:v1` | 5001 | API replica 1 |
-| `ml-api-2` | `ml-api:v1` | 5002 | API replica 2 |
-| `nginx` | `nginx:alpine` | 80 | Load balancer |
+### `POST /train`
+Triggers a full model retrain on new synthetic data and overwrites `house_price_model.pkl`.
 
 ---
 
-## 🚀 Quick Start
+## 🐳 Docker — Quick Start
 
-**Prerequisites:** Docker Engine 24.0+, Docker Compose v2
+**Prerequisites:** Docker Engine 24.0+
 
 ```bash
-git clone https://github.com/saadcnx/ml-model-serving-docker.git
-cd ml-model-serving-docker
+git clone https://github.com/saadcnx/house-price-ml-deployment.git
+cd house-price-ml-deployment
 
-# Build and start the full stack
-docker compose up -d
+# Build the image
+docker build -t ml-house-predictor:v1.1 .
 
-# Verify all containers are healthy
-docker compose ps
+# Create shared network
+docker network create ml-network
 
-# Health check through Nginx
-curl -s http://localhost/health
+# Start PostgreSQL
+docker run -d \
+  --name postgres-ml \
+  --network ml-network \
+  -e POSTGRES_DB=mldata \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=password \
+  postgres:13
 
-# Make a prediction
-curl -s -X POST http://localhost/predict \
+# Initialize schema
+docker exec -i postgres-ml psql -U postgres -d mldata <<'EOF'
+CREATE TABLE IF NOT EXISTS predictions (
+    id SERIAL PRIMARY KEY,
+    size REAL NOT NULL,
+    bedrooms INTEGER NOT NULL,
+    age INTEGER NOT NULL,
+    predicted_price REAL NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+EOF
+
+# Start the ML API
+docker run -d \
+  --name ml-predictor \
+  --network ml-network \
+  -p 5000:5000 \
+  -e DB_HOST=postgres-ml \
+  -e DB_NAME=mldata \
+  -e DB_USER=postgres \
+  -e DB_PASSWORD=password \
+  ml-house-predictor:v1.1
+
+# Test it
+curl http://localhost:5000/health
+curl -X POST http://localhost:5000/predict \
   -H "Content-Type: application/json" \
-  -d '{"features": [5.1, 3.5, 1.4, 0.2]}'
-
-# View prediction history
-curl -s "http://localhost/predictions/history?limit=5"
+  -d '{"size": 2200, "bedrooms": 3, "age": 8}'
 ```
 
 ---
 
-## ✅ End-to-End Test Suite
+## ☸️ Kubernetes Deployment
 
-A plain Python test script (no framework) validates the full API surface and exits `0` on success, `1` on any failure.
+**Prerequisites:** `kubectl`, `minikube` (or any K8s cluster)
 
 ```bash
-python3 tests/test_api.py
+# Start minikube and load image
+minikube start
+minikube image load ml-house-predictor:v1.1
+
+# Deploy all resources
+kubectl apply -f k8s-manifests/db-init-configmap.yaml
+kubectl apply -f k8s-manifests/postgres-deployment.yaml
+kubectl apply -f k8s-manifests/ml-deployment.yaml
+
+# Watch pods come up
+kubectl get pods -w
+
+# Wait for PostgreSQL readiness
+kubectl wait --for=condition=ready pod -l app=postgres --timeout=60s
+
+# Initialize database schema
+kubectl exec -i deployment/postgres-deployment -- \
+  psql -U postgres -d mldata -c "
+    CREATE TABLE IF NOT EXISTS predictions (
+      id SERIAL PRIMARY KEY, size REAL, bedrooms INTEGER,
+      age INTEGER, predicted_price REAL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );"
+
+# Get the service URL and test
+SERVICE_URL=$(minikube service ml-predictor-service --url)
+curl $SERVICE_URL/health
+curl -X POST $SERVICE_URL/predict \
+  -H "Content-Type: application/json" \
+  -d '{"size": 2400, "bedrooms": 3, "age": 7}'
+
+# Scale up
+kubectl scale deployment ml-predictor-deployment --replicas=3
+kubectl get pods
 ```
 
-**Test cases covered:**
+---
 
-| Test | Expected Result |
+## ⚙️ Kubernetes Manifests Overview
+
+### ML API Deployment (`ml-deployment.yaml`)
+```yaml
+replicas: 2
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 5000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 5000
+  initialDelaySeconds: 5
+  periodSeconds: 5
+```
+
+### PostgreSQL Service (`postgres-deployment.yaml`)
+- Type: `ClusterIP` — only reachable within the cluster
+- ML API connects via `DB_HOST=postgres-service` env variable
+
+### ML API Service (`ml-deployment.yaml`)
+- Type: `LoadBalancer` — externally accessible on port 80 → container port 5000
+
+---
+
+## 🧠 Model Details
+
+| Property | Value |
 |---|---|
-| `GET /health` | `status: healthy`, `model_loaded: true` |
-| Predict `[5.1, 3.5, 1.4, 0.2]` | `setosa` |
-| Predict `[6.2, 2.9, 4.3, 1.3]` | `versicolor` |
-| Predict `[7.3, 2.9, 6.3, 1.8]` | `virginica` |
-| Malformed request (3 features) | `HTTP 400` |
-| `GET /predictions/history` | Returns array with correct fields |
-
-All three class predictions are deterministic — guaranteed by a fixed random seed in the training script.
-
----
-
-## 🔄 Load Balancing Verification
-
-```bash
-# Hit /health 10 times — container_id rotates between the two replicas
-for i in $(seq 1 10); do
-  curl -s http://localhost/health | python3 -m json.tool | grep container_id
-done
-```
-
----
-
-## 💥 Resilience Testing
-
-```bash
-# Stop one replica
-docker compose stop ml-api-1
-
-# All 10 requests still return HTTP 200 (Nginx routes to surviving replica)
-for i in $(seq 1 10); do
-  curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost/predict \
-    -H "Content-Type: application/json" \
-    -d '{"features":[5.1,3.5,1.4,0.2]}'
-done
-
-# Restart and verify recovery within 60 seconds
-docker compose start ml-api-1
-curl -s http://localhost:5001/health
-
-# Confirm no data loss in PostgreSQL
-docker exec -it <postgres-container> psql -U postgres -d ml_predictions \
-  -c "SELECT COUNT(*) FROM predictions;"
-```
+| Algorithm | Linear Regression (scikit-learn) |
+| Features | `size` (sq ft), `bedrooms` (count), `age` (years) |
+| Target | `predicted_price` (USD) |
+| Training data | 1000 synthetic samples (seed=42) |
+| Serialization | `joblib` → `house_price_model.pkl` |
+| Reproducibility | Fixed `np.random.seed(42)` |
 
 ---
 
@@ -205,13 +241,12 @@ docker exec -it <postgres-container> psql -U postgres -d ml_predictions \
 
 ```sql
 CREATE TABLE predictions (
-    id            SERIAL PRIMARY KEY,
-    timestamp     TIMESTAMPTZ DEFAULT NOW(),
-    features      JSONB NOT NULL,
-    predicted_class TEXT NOT NULL,
-    prediction    INTEGER NOT NULL,
-    probabilities JSONB NOT NULL,
-    container_id  TEXT
+    id             SERIAL PRIMARY KEY,
+    size           REAL NOT NULL,
+    bedrooms       INTEGER NOT NULL,
+    age            INTEGER NOT NULL,
+    predicted_price REAL NOT NULL,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
@@ -219,32 +254,49 @@ CREATE TABLE predictions (
 
 ## ✅ Production Patterns Applied
 
-- [x] Model trained and serialized at image build time — zero runtime training
-- [x] Stateless API replicas — any replica can serve any request
-- [x] PostgreSQL for durable prediction history — survives container restarts
-- [x] Nginx round-robin — traffic distributed evenly across replicas
-- [x] Health checks on all services — Compose waits for readiness before routing
-- [x] `HTTP 400` on malformed input — input validation at API boundary
-- [x] Fixed random seed — deterministic, reproducible predictions
-- [x] Single-command stack startup via `docker compose up -d`
+- [x] Non-root container user (`mluser`, UID 1000)
+- [x] Gunicorn WSGI server (2 workers) — not Flask dev server
+- [x] Docker health check on `/health`
+- [x] Kubernetes liveness + readiness probes
+- [x] Environment variable–based database config (no hardcoded secrets)
+- [x] Docker network isolation between services
+- [x] K8s ConfigMap for database init script
+- [x] Horizontal scaling via `kubectl scale`
+- [x] `HTTP 400` on missing input fields
+- [x] Graceful DB failure handling (API stays up if DB is unavailable)
+
+---
+
+## 🧹 Cleanup
+
+```bash
+# Docker
+docker stop ml-predictor postgres-ml
+docker rm ml-predictor postgres-ml
+docker network rm ml-network
+
+# Kubernetes
+kubectl delete -f k8s-manifests/
+minikube stop
+```
 
 ---
 
 ## 🧰 Tech Stack
 
-- **ML:** scikit-learn (Iris classifier), joblib, numpy
-- **API:** Flask, psycopg2
-- **Database:** PostgreSQL 15
-- **Proxy:** Nginx (alpine)
-- **Containerization:** Docker Engine, Docker Compose v2
-- **Base Image:** `python:3.11-slim`
+- **ML:** scikit-learn, pandas, numpy, joblib
+- **API:** Flask, Gunicorn
+- **Database:** PostgreSQL 13, psycopg2
+- **Containerization:** Docker Engine, Docker networks
+- **Orchestration:** Kubernetes (Deployments, Services, ConfigMaps)
+- **Base Image:** `python:3.9-slim`
 
 ---
 
 ## 📖 Further Reading
 
-- [Flask Quickstart](https://flask.palletsprojects.com/en/3.0.x/quickstart/)
-- [scikit-learn Model Persistence](https://scikit-learn.org/stable/model_persistence.html)
-- [Nginx Upstream Load Balancing](https://nginx.org/en/docs/http/load_balancing.html)
-- [Docker Compose Health Checks](https://docs.docker.com/compose/compose-file/05-services/#healthcheck)
+- [scikit-learn — Model Persistence](https://scikit-learn.org/stable/model_persistence.html)
+- [Flask Deployment with Gunicorn](https://flask.palletsprojects.com/en/3.0.x/deploying/gunicorn/)
+- [Kubernetes Liveness & Readiness Probes](https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/)
 - [PostgreSQL Docker Official Image](https://hub.docker.com/_/postgres)
+- [Docker Networking](https://docs.docker.com/network/)
